@@ -3,6 +3,7 @@ import random
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
+from aiogram.types import FSInputFile
 
 import datetime
 import json
@@ -356,6 +357,16 @@ async def test_log_entry(message: types.Message):
     }
     save_entry(dummy_entry)
     await message.answer("📁 Тестовая запись сохранена в лог.")
+
+@dp.message(Command(commands=['/export_log']))
+async def export_log(message: types.Message):
+    try:
+        await message.answer_document(
+            types.FSInputFile("mood_log.json"),
+            caption="📂 Вот лог со всеми состояниями"
+        )
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка при отправке: {e}")
 
 @dp.message()
 async def process_input(message: types.Message):
