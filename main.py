@@ -206,11 +206,13 @@ reminder_kb = types.InlineKeyboardMarkup(
 # --- Обёртка для проверки ADMIN_ID ---
 def admin_only(handler):
     async def wrapper(message, *args, **kwargs):
-        if message.from_user.id != ADMIN_ID:
-            print(f"[LOG] Access denied for {message.from_user.id} to admin command {message.text}")
-            await message.answer("У тебя нет доступа к этой команде.")
-            return
-        print(f"[LOG] ADMIN {message.from_user.id} triggered {message.text}")
+        # Проверяем только команды, начинающиеся с /
+        if message.text and message.text.startswith('/'):
+            if message.from_user.id != ADMIN_ID:
+                print(f"[LOG] Access denied for {message.from_user.id} to admin command {message.text}")
+                await message.answer("У тебя нет доступа к этой команде.")
+                return
+            print(f"[LOG] ADMIN {message.from_user.id} triggered {message.text}")
         return await handler(message, *args, **kwargs)
     return wrapper
 
