@@ -358,7 +358,7 @@ async def test_log_entry(message: types.Message):
     save_entry(dummy_entry)
     await message.answer("📁 Тестовая запись сохранена в лог.")
 
-@dp.message(Command(commands=['/export_log']))
+@dp.message(Command(commands=['export_log']))
 async def export_log(message: types.Message):
     try:
         await message.answer_document(
