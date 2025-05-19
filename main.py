@@ -349,6 +349,12 @@ async def disable_pings(message: types.Message):
 
 @dp.message()
 async def process_input(message: types.Message):
+    # --- Добавлено: игнорировать обычный ввод от админа ---
+    if message.from_user.id == ADMIN_ID:ы
+        # Можно просто return, либо явно:
+        await message.answer("Этот бот не предназначен для ввода данных админом.")
+        return
+
     if message.text.lower().strip() in ['/export_log', '/start', '/отъебись']:
         return  # эти команды обрабатываются отдельно
     print(f"[DEBUG] process_input: {message.text} from {message.chat.id}")
