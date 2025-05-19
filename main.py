@@ -349,9 +349,12 @@ async def disable_pings(message: types.Message):
 
 @dp.message()
 async def process_input(message: types.Message):
-    # --- Исправлено: убрана опечатка и лишний символ, исправлен отступ ---
+    # --- Исправлено: админ может использовать админ-команды, но не попадает в пользовательский поток ---
     if message.from_user.id == ADMIN_ID:
-        # Можно просто return, либо явно:
+        # Если это команда (начинается с /), ничего не делаем — обработает другой хэндлер
+        if message.text and message.text.startswith('/'):
+            return
+        # Если это не команда — отвечаем, что бот не для ввода данных админом
         await message.answer("Этот бот не предназначен для ввода данных админом.")
         return
 
