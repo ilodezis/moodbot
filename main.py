@@ -12,6 +12,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # --- Новые константы ---
 ADMIN_ID = 409183653  # <-- теперь только admin
+TARGET_USER_ID = 791353019  # <-- ID получателя для send_* команд
 
 API_TOKEN = '7818869168:AAGmcVSu7NliSSoNiBLoe2ARzVLCYgbpgRI'
 
@@ -197,7 +198,6 @@ reminder_kb = types.InlineKeyboardMarkup(
     inline_keyboard=[
         [
             types.InlineKeyboardButton(text="✅ Выпила", callback_data="confirm_water"),
-            types.InlineKeyboardButton(text="🧘 Осанка", callback_data="confirm_posture"),
             types.InlineKeyboardButton(text="⏰ Позже", callback_data="later")
         ]
     ]
@@ -205,7 +205,8 @@ reminder_kb = types.InlineKeyboardMarkup(
 
 # --- Обёртка для проверки ADMIN_ID ---
 def admin_only(handler):
-    async def wrapper(message, *args, **kwargs):
+    async def wrapper(message: types.Message, **kwargs):
+        print(f"[ADMIN_ONLY] Called for user {getattr(message.from_user, 'id', None)} with text: {getattr(message, 'text', None)}")
         # Проверяем только команды, начинающиеся с /
         if message.text and message.text.startswith('/'):
             if message.from_user.id != ADMIN_ID:
@@ -213,7 +214,9 @@ def admin_only(handler):
                 await message.answer("У тебя нет доступа к этой команде.")
                 return
             print(f"[LOG] ADMIN {message.from_user.id} triggered {message.text}")
-        return await handler(message, *args, **kwargs)
+        else:
+            print(f"[ADMIN_ONLY] Not a command or no text: {getattr(message, 'text', None)}")
+        return await handler(message, **kwargs)
     return wrapper
 
 # --- Обёртка для callback_query (admin only, если потребуется) ---
@@ -230,9 +233,9 @@ def admin_only_callback(handler):
 reminder_states = {}
 ping_blocked_until = {}
 
-# --- Объявление хэндлеров (без декораторов) ---
+# --- Объявление хэндлеров (все принимают **kwargs) ---
 
-async def start_handler(message: types.Message):
+async def start_handler(message: types.Message, **kwargs):
     print(f"[DEBUG] /start from {message.chat.id}")
     user_data[message.chat.id] = {'step': 0, 'entry': {}}
     greeting = (
@@ -251,58 +254,128 @@ async def start_handler(message: types.Message):
     await message.answer(greeting)
     await ask_next_field(message)
 
-async def ask_next_field(message):
-    user_id = message.chat.id
-    print(f"[DEBUG] ask_next_field for user {user_id}, step {user_data[user_id]['step']}")
-    step = user_data[user_id]['step']
+async def ask_next_field(message: types.Message, **kwargs):
+    print(f"[DEBUG] ask_next_field for user {message.chat.id}, step {user_data[message.chat.id]['step']}")
+    step = user_data[message.chat.id]['step']
     if step < len(mood_fields):
         _, field_name = mood_fields[step]
         await message.answer(f"{field_name} (1–10):")
     else:
         await message.answer("Хочешь что-то добавить? Напиши сюда. Если нет — просто отправь '-' или 'нет'.")
 
-async def test_reminders(message: types.Message):
-    print(f"[DEBUG] test_reminders called by {message.chat.id}")
-    await send_reminder()
-    await periodic_tip()
-    await message.answer("🔔 Тестовые напоминания и советы отправлены.")
-
-async def test_water(message: types.Message):
+# --- Тестовые команды (отправляют только админу) ---
+async def test_water(message: types.Message, **kwargs):
     print(f"[DEBUG] test_water called by {message.chat.id}")
-    await message.answer("💧 Напоминание: не забудь пить воду", reply_markup=reminder_kb)
+    await message.answer("💧 Тест: напоминание про воду (только админу)", reply_markup=reminder_kb)
     reminder_states[message.chat.id] = {'type': 'water', 'time': datetime.datetime.now()}
     asyncio.create_task(water_annoy_loop(message.chat.id))
 
-async def test_tablets(message: types.Message):
+async def test_tablets(message: types.Message, **kwargs):
     print(f"[DEBUG] test_tablets called by {message.chat.id}")
     keyboard = types.InlineKeyboardMarkup(
         inline_keyboard=[
             [types.InlineKeyboardButton(text="✅ Приняла", callback_data="confirm_tablets")]
         ]
     )
-    await message.answer("💊 Напоминание: не забудь принять добавки / таблетки", reply_markup=keyboard)
+    await message.answer("💊 Тест: напоминание про таблетки (только админу)", reply_markup=keyboard)
     reminder_states[message.chat.id] = {'type': 'tablets', 'time': datetime.datetime.now()}
     asyncio.create_task(tablet_annoy_loop(message.chat.id))
 
-async def test_mood(message: types.Message):
+async def test_mood(message: types.Message, **kwargs):
     print(f"[DEBUG] test_mood called by {message.chat.id}")
-    await message.answer("🧠 Пора оценить своё состояние. Напиши /start и просто отметь, как ты")
+    await message.answer("🧠 Тест: напоминание про трекинг настроения (только админу)")
+
+async def test_tip(message: types.Message, **kwargs):
+    print(f"[DEBUG] test_tip called by {message.chat.id}")
+    await message.answer(f"Тестовый совет (только админу): {random.choice(random_tips)}")
+
+# --- SEND-команды (отправляют ей) ---
+async def send_water(message: types.Message, **kwargs):
+    print(f"[DEBUG] send_water called by {message.chat.id}")
+    target_id = TARGET_USER_ID  # Используем константу напрямую
+    print(f"[DEBUG] TARGET_USER_ID = {target_id} (type: {type(target_id)})")
+    try:
+        await bot.send_message(target_id, "💧 Напоминание: не забудь пить воду", reply_markup=reminder_kb)
+        reminder_states[target_id] = {'type': 'water', 'time': datetime.datetime.now()}
+        asyncio.create_task(water_annoy_loop(target_id))
+        await message.answer("✅ Отправлено ей.")
+    except Exception as e:
+        print(f"[ERROR] send_water: {e}")
+        await message.answer(f"❌ Ошибка отправки: {e}")
+
+async def send_tablets(message: types.Message, **kwargs):
+    print(f"[DEBUG] send_tablets called by {message.chat.id}")
+    target_id = TARGET_USER_ID
+    print(f"[DEBUG] TARGET_USER_ID = {target_id} (type: {type(target_id)})")
+    try:
+        keyboard = types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [types.InlineKeyboardButton(text="✅ Приняла", callback_data="confirm_tablets")]
+            ]
+        )
+        await bot.send_message(target_id, "💊 Напоминание: не забудь принять добавки / таблетки", reply_markup=keyboard)
+        reminder_states[target_id] = {'type': 'tablets', 'time': datetime.datetime.now()}
+        asyncio.create_task(tablet_annoy_loop(target_id))
+        await message.answer("✅ Отправлено ей.")
+    except Exception as e:
+        print(f"[ERROR] send_tablets: {e}")
+        await message.answer(f"❌ Ошибка отправки: {e}")
+
+async def send_mood(message: types.Message, **kwargs):
+    print(f"[DEBUG] send_mood called by {message.chat.id}")
+    target_id = TARGET_USER_ID
+    print(f"[DEBUG] TARGET_USER_ID = {target_id} (type: {type(target_id)})")
+    try:
+        await bot.send_message(target_id, "🧠 Пора оценить своё состояние. Напиши /start и просто отметь, как ты")
+        await message.answer("✅ Отправлено ей.")
+    except Exception as e:
+        print(f"[ERROR] send_mood: {e}")
+        await message.answer(f"❌ Ошибка отправки: {e}")
+
+async def send_tip(message: types.Message, **kwargs):
+    print(f"[DEBUG] send_tip called by {message.chat.id}")
+    target_id = TARGET_USER_ID
+    print(f"[DEBUG] TARGET_USER_ID = {target_id} (type: {type(target_id)})")
+    try:
+        await bot.send_message(target_id, f"📌 Совет: {random.choice(random_tips)}")
+        await message.answer("✅ Отправлено ей.")
+    except Exception as e:
+        print(f"[ERROR] send_tip: {e}")
+        await message.answer(f"❌ Ошибка отправки: {e}")
+
+# --- SEND-команда для произвольного сообщения ---
+async def send_message(message: types.Message, **kwargs):
+    print(f"[DEBUG] send_message called by {message.chat.id}")
+    target_id = TARGET_USER_ID  # Используем константу напрямую
+    print(f"[DEBUG] TARGET_USER_ID = {target_id} (type: {type(target_id)})")
+    try:
+        # Проверяем, есть ли текст после команды
+        text = message.text.split(maxsplit=1)
+        if len(text) < 2:
+            await message.answer("❌ Укажите текст сообщения после команды. Пример: `/say Привет!`")
+            return
+        # Отправляем сообщение указанному пользователю
+        await bot.send_message(target_id, text[1])
+        await message.answer("✅ Сообщение отправлено.")
+    except Exception as e:
+        print(f"[ERROR] send_message: {e}")
+        await message.answer(f"❌ Ошибка отправки: {e}")
+
+async def test_reminders(message: types.Message, **kwargs):
     print(f"[DEBUG] test_reminders called by {message.chat.id}")
-    await send_reminder()
-    await periodic_tip()
-    await message.answer("🔔 Тестовые напоминания и советы отправлены.")
+    await message.answer("🔔 Тестовая команда больше не отправляет все напоминания сразу. Используй отдельные команды:\n"
+                         "/test_water — напоминание про воду\n"
+                         "/test_tablets — напоминание про таблетки\n"
+                         "/test_mood — напоминание про трекинг настроения\n"
+                         "/test_tip — случайный совет")
 
-async def test_random_tip(message: types.Message):
-    print(f"[DEBUG] test_random_tip called by {message.chat.id}")
-    await message.answer(f"Тестовый совет: {random.choice(random_tips)}")
-
-async def clear_log(message: types.Message):
+async def clear_log(message: types.Message, **kwargs):
     print(f"[DEBUG] clear_log called by {message.chat.id}")
     with open(STATE_FILE, 'w') as f:
         json.dump([], f)
     await message.answer("🧹 Лог очищен. Все записи удалены.")
 
-async def test_log_entry(message: types.Message):
+async def test_log_entry(message: types.Message, **kwargs):
     print(f"[DEBUG] test_log_entry called by {message.chat.id}")
     dummy_entry = {
         "mood": 5,
@@ -316,7 +389,8 @@ async def test_log_entry(message: types.Message):
     save_entry(dummy_entry)
     await message.answer("📁 Тестовая запись сохранена в лог.")
 
-async def export_log(message: types.Message):
+async def export_log(message: types.Message, **kwargs):
+    print(f"[DEBUG] export_log called by {message.chat.id}")
     try:
         print(f"[LOG] export_log called by {message.chat.id}")
         await message.answer_document(
@@ -326,12 +400,14 @@ async def export_log(message: types.Message):
     except Exception as e:
         await message.answer(f"⚠️ Ошибка при отправке: {e}")
 
-async def disable_pings(message: types.Message):
+async def disable_pings(message: types.Message, **kwargs):
+    print(f"[DEBUG] disable_pings called by {message.chat.id}")
     ping_blocked_until[message.chat.id] = datetime.datetime.now() + datetime.timedelta(hours=1)
     print(f"[LOG] USER {message.chat.id} отключил напоминания до {ping_blocked_until[message.chat.id]}")
     await message.answer("🫠 Окей, отключаю напоминания на 1 час. Но потом я вернусь!")
 
-async def process_input(message: types.Message):
+async def process_input(message: types.Message, **kwargs):
+    print(f"[DEBUG] process_input called by {message.from_user.id} with text: {message.text}")
     # --- Исправлено: админ может использовать админ-команды, но не попадает в пользовательский поток ---
     if message.from_user.id == ADMIN_ID:
         # Если это команда (начинается с /), ничего не делаем — обработает другой хэндлер
@@ -428,12 +504,13 @@ async def tablet_annoy_loop(chat_id):
                 ]
             )
             await bot.send_message(chat_id, random.choice([
-                "💊 Таблетки сами себя не примут!",
-                "🧠 А добавочки где?",
-                "⏰ Если не приняла — я буду пиликать!"
+                "💊 Напоминаю: таблетки сами себя не примут!",
+                "⏰ Время принять добавки. Не забывай!",
+                "🧠 Организм ждёт добавки. Пора принять!",
+                "📦 Таблетки ждут тебя. Не откладывай!"
             ]), reply_markup=keyboard)
             print(f"[LOG] tablet_annoy_loop: отправлено напоминание пользователю {chat_id}")
-            await asyncio.sleep(300)
+            await asyncio.sleep(300)  # 5 минут
         except Exception as e:
             print(f"[LOG] tablet_annoy_loop error: {e}")
             continue
@@ -473,28 +550,39 @@ async def periodic_tip():
 async def main():
     print("[DEBUG] main() started")
     # --- Регистрация хэндлеров ---
-    dp.message.register(start_handler, Command(commands=['start']))
-    dp.message.register(test_reminders, Command(commands=['_test_remind']))
-    dp.message.register(test_water, Command(commands=['_test_water']))
-    dp.message.register(test_tablets, Command(commands=['_test_tablets']))
-    dp.message.register(test_mood, Command(commands=['_test_mood']))
-    dp.message.register(test_random_tip, Command(commands=['_test_tip']))
-    dp.message.register(clear_log, Command(commands=['_clear_log']))
-    dp.message.register(test_log_entry, Command(commands=['_test_log']))
-    dp.message.register(export_log, Command(commands=['export_log']))
-    dp.message.register(disable_pings, Command(commands=['отъебись']))
+    print("[DEBUG] Registering handlers...")
+    dp.message.register(start_handler, Command("start"))
+    # Тестовые команды (только админу)
+    dp.message.register(admin_only(test_water), Command("test_water"))
+    dp.message.register(admin_only(test_tablets), Command("test_tablets"))
+    dp.message.register(admin_only(test_mood), Command("test_mood"))
+    dp.message.register(admin_only(test_tip), Command("test_tip"))
+    # SEND-команды (только админу, но отправляют ей)
+    dp.message.register(admin_only(send_water), Command("send_water"))
+    dp.message.register(admin_only(send_tablets), Command("send_tablets"))
+    dp.message.register(admin_only(send_mood), Command("send_mood"))
+    dp.message.register(admin_only(send_tip), Command("send_tip"))
+    dp.message.register(admin_only(send_message), Command("say"))  # Регистрация команды /say
+    dp.message.register(admin_only(test_reminders), Command("test_remind"))
+    dp.message.register(admin_only(clear_log), Command("clear_log"))
+    dp.message.register(admin_only(test_log_entry), Command("test_log"))
+    dp.message.register(admin_only(export_log), Command("export_log"))
+    dp.message.register(disable_pings, Command("отъебись"))
     dp.message.register(process_input)  # fallback
 
     dp.callback_query.register(reminder_callback_handler, lambda c: c.data in ['confirm_water', 'confirm_posture', 'later'])
     dp.callback_query.register(confirm_tablets_callback, lambda c: c.data == 'confirm_tablets')
     dp.callback_query.register(confirm_water_callback, lambda c: c.data == 'confirm_water')
 
+    print("[DEBUG] Handlers registered. Starting scheduler...")
     scheduler.add_job(send_reminder, 'cron', hour=9)
     scheduler.add_job(send_reminder, 'cron', hour=21)
     for h in [0, 3, 6, 9, 12, 15, 18, 21]:
         scheduler.add_job(periodic_tip, 'cron', hour=h)
     scheduler.start()
+    print("[DEBUG] Scheduler started. Starting polling...")
     await dp.start_polling(bot)
+    print("[DEBUG] Polling started.")
 
 if __name__ == '__main__':
     print("[DEBUG] __main__ entry")
