@@ -10,6 +10,9 @@ import json
 import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+# --- Новые константы ---
+ADMIN_ID = 409183653  # <-- теперь только admin
+
 API_TOKEN = '7818869168:AAGmcVSu7NliSSoNiBLoe2ARzVLCYgbpgRI'
 
 bot = Bot(token=API_TOKEN)
@@ -189,6 +192,42 @@ easter_eggs = [
     "🐣 Пасхалка: даже ебанный — всё ещё человек 🫠"
 ]
 
+# --- Универсальная клавиатура для напоминаний ---
+reminder_kb = types.InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="✅ Выпила", callback_data="confirm_water"),
+            types.InlineKeyboardButton(text="🧘 Осанка", callback_data="confirm_posture"),
+            types.InlineKeyboardButton(text="⏰ Позже", callback_data="later")
+        ]
+    ]
+)
+
+# --- Обёртка для проверки ADMIN_ID ---
+def admin_only(handler):
+    async def wrapper(message, *args, **kwargs):
+        if message.from_user.id != ADMIN_ID:
+            print(f"[LOG] Access denied for {message.from_user.id} to admin command {message.text}")
+            await message.answer("У тебя нет доступа к этой команде.")
+            return
+        print(f"[LOG] ADMIN {message.from_user.id} triggered {message.text}")
+        return await handler(message, *args, **kwargs)
+    return wrapper
+
+# --- Обёртка для callback_query (admin only, если потребуется) ---
+def admin_only_callback(handler):
+    async def wrapper(callback_query, *args, **kwargs):
+        if callback_query.from_user.id != ADMIN_ID:
+            print(f"[LOG] Access denied for {callback_query.from_user.id} to callback {callback_query.data}")
+            await callback_query.answer("У тебя нет доступа к этой команде.", show_alert=True)
+            return
+        print(f"[LOG] ADMIN {callback_query.from_user.id} triggered callback {callback_query.data}")
+        return await handler(callback_query, *args, **kwargs)
+    return wrapper
+
+reminder_states = {}
+ping_blocked_until = {}
+
 @dp.message(Command(commands=['start']))
 async def start_handler(message: types.Message):
     print(f"[DEBUG] /start from {message.chat.id}")
@@ -220,6 +259,7 @@ async def ask_next_field(message):
         await message.answer("Хочешь что-то добавить? Напиши сюда. Если нет — просто отправь '-' или 'нет'.")
 
 @dp.message(Command(commands=['_test_remind']))
+@admin_only
 async def test_reminders(message: types.Message):
     print(f"[DEBUG] test_reminders called by {message.chat.id}")
     await send_reminder()
@@ -227,90 +267,15 @@ async def test_reminders(message: types.Message):
     await message.answer("🔔 Тестовые напоминания и советы отправлены.")
 
 @dp.message(Command(commands=['_test_water']))
+@admin_only
 async def test_water(message: types.Message):
     print(f"[DEBUG] test_water called by {message.chat.id}")
-    keyboard = types.InlineKeyboardMarkup(
-        inline_keyboard=[
-            [types.InlineKeyboardButton(text="✅ Выпила", callback_data="confirm_water")]
-        ]
-    )
-    await message.answer("💧 Напоминание: не забудь пить воду", reply_markup=keyboard)
+    await message.answer("💧 Напоминание: не забудь пить воду", reply_markup=reminder_kb)
     reminder_states[message.chat.id] = {'type': 'water', 'time': datetime.datetime.now()}
     asyncio.create_task(water_annoy_loop(message.chat.id))
-    asyncio.create_task(tablet_annoy_loop(message.chat.id))
-
-reminder_states = {}
-ping_blocked_until = {}
-
-@dp.callback_query(lambda c: c.data == 'confirm_tablets')
-async def confirm_tablets_callback(callback_query: types.CallbackQuery):
-    chat_id = callback_query.from_user.id
-    reminder_states.pop(chat_id, None)
-    await callback_query.message.edit_text("💊 Принято. Умница.")
-
-@dp.message(Command(commands=['_test_water']))
-async def test_water(message: types.Message):
-    print(f"[DEBUG] test_water called by {message.chat.id}")
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(types.InlineKeyboardButton(text="✅ Выпила", callback_data="confirm_water"))
-    await message.answer("💧 Напоминание: не забудь пить воду", reply_markup=keyboard)
-    reminder_states[message.chat.id] = {'type': 'water', 'time': datetime.datetime.now()}
-    asyncio.create_task(water_annoy_loop(message.chat.id))
-
-@dp.callback_query(lambda c: c.data == 'confirm_water')
-async def confirm_water_callback(callback_query: types.CallbackQuery):
-    chat_id = callback_query.from_user.id
-    reminder_states.pop(chat_id, None)
-    await callback_query.message.edit_text("💧 Хорош! Вода внутри — сила снаружи.")
-
-@dp.message(Command(commands=['отъебись']))
-async def disable_pings(message: types.Message):
-    ping_blocked_until[message.chat.id] = datetime.datetime.now() + datetime.timedelta(hours=1)
-    await message.answer("🫠 Окей, отключаю напоминания на 1 час. Но потом я вернусь!")
-
-async def water_annoy_loop(chat_id):
-    await asyncio.sleep(1800)  # 30 минут
-    while chat_id in reminder_states and reminder_states[chat_id]['type'] == 'water':
-        if chat_id in ping_blocked_until and datetime.datetime.now() < ping_blocked_until[chat_id]:
-            await asyncio.sleep(60)
-            continue
-        try:
-            keyboard = types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [types.InlineKeyboardButton(text="✅ Выпила", callback_data="confirm_water")]
-                ]
-            )
-            await bot.send_message(chat_id, random.choice([
-                "🚨 Ты воду вообще пьёшь, нет?",
-                "💦 Алё, организм сушится",
-                "🌊 Напоминаю: H2O — это важно, а не просто химия!"
-            ]), reply_markup=keyboard)
-            await asyncio.sleep(300)
-        except Exception:
-            continue
-
-async def tablet_annoy_loop(chat_id):
-    await asyncio.sleep(1800)  # 30 минут
-    while chat_id in reminder_states and reminder_states[chat_id]['type'] == 'tablets':
-        if chat_id in ping_blocked_until and datetime.datetime.now() < ping_blocked_until[chat_id]:
-            await asyncio.sleep(60)
-            continue
-        try:
-            keyboard = types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [types.InlineKeyboardButton(text="✅ Приняла", callback_data="confirm_tablets")]
-                ]
-            )
-            await bot.send_message(chat_id, random.choice([
-                "💊 Таблетки сами себя не примут!",
-                "🧠 А добавочки где?",
-                "⏰ Если не приняла — я буду пиликать!"
-            ]), reply_markup=keyboard)
-            await asyncio.sleep(300)
-        except Exception:
-            continue
 
 @dp.message(Command(commands=['_test_tablets']))
+@admin_only
 async def test_tablets(message: types.Message):
     print(f"[DEBUG] test_tablets called by {message.chat.id}")
     keyboard = types.InlineKeyboardMarkup(
@@ -323,6 +288,7 @@ async def test_tablets(message: types.Message):
     asyncio.create_task(tablet_annoy_loop(message.chat.id))
 
 @dp.message(Command(commands=['_test_mood']))
+@admin_only
 async def test_mood(message: types.Message):
     print(f"[DEBUG] test_mood called by {message.chat.id}")
     await message.answer("🧠 Пора оценить своё состояние. Напиши /start и просто отметь, как ты")
@@ -332,11 +298,13 @@ async def test_mood(message: types.Message):
     await message.answer("🔔 Тестовые напоминания и советы отправлены.")
 
 @dp.message(Command(commands=['_test_tip']))
+@admin_only
 async def test_random_tip(message: types.Message):
     print(f"[DEBUG] test_random_tip called by {message.chat.id}")
     await message.answer(f"Тестовый совет: {random.choice(random_tips)}")
 
 @dp.message(Command(commands=['_clear_log']))
+@admin_only
 async def clear_log(message: types.Message):
     print(f"[DEBUG] clear_log called by {message.chat.id}")
     with open(STATE_FILE, 'w') as f:
@@ -344,6 +312,7 @@ async def clear_log(message: types.Message):
     await message.answer("🧹 Лог очищен. Все записи удалены.")
 
 @dp.message(Command(commands=['_test_log']))
+@admin_only
 async def test_log_entry(message: types.Message):
     print(f"[DEBUG] test_log_entry called by {message.chat.id}")
     dummy_entry = {
@@ -359,14 +328,22 @@ async def test_log_entry(message: types.Message):
     await message.answer("📁 Тестовая запись сохранена в лог.")
 
 @dp.message(Command(commands=['export_log']))
+@admin_only
 async def export_log(message: types.Message):
     try:
+        print(f"[LOG] export_log called by {message.chat.id}")
         await message.answer_document(
             types.FSInputFile("mood_log.json"),
             caption="📂 Вот лог со всеми состояниями"
         )
     except Exception as e:
         await message.answer(f"⚠️ Ошибка при отправке: {e}")
+
+@dp.message(Command(commands=['отъебись']))
+async def disable_pings(message: types.Message):
+    ping_blocked_until[message.chat.id] = datetime.datetime.now() + datetime.timedelta(hours=1)
+    print(f"[LOG] USER {message.chat.id} отключил напоминания до {ping_blocked_until[message.chat.id]}")
+    await message.answer("🫠 Окей, отключаю напоминания на 1 час. Но потом я вернусь!")
 
 @dp.message()
 async def process_input(message: types.Message):
@@ -407,6 +384,70 @@ async def process_input(message: types.Message):
         await message.answer(f"Совет дня: {random.choice(random_tips)}")
         user_data.pop(user_id, None)
 
+# --- CallbackQuery хэндлеры оставляем без проверки user_only_callback ---
+@dp.callback_query(lambda c: c.data in ['confirm_water', 'confirm_posture', 'later'])
+async def reminder_callback_handler(callback_query: types.CallbackQuery):
+    print(f"[LOG] Callback {callback_query.data} от {callback_query.from_user.id}")
+    if callback_query.data.startswith('confirm_'):
+        await callback_query.message.edit_text("Принято! 🥳")
+    elif callback_query.data == 'later':
+        await callback_query.message.edit_text("Ок, напомню позже.")
+
+@dp.callback_query(lambda c: c.data == 'confirm_tablets')
+async def confirm_tablets_callback(callback_query: types.CallbackQuery):
+    chat_id = callback_query.from_user.id
+    reminder_states.pop(chat_id, None)
+    print(f"[LOG] confirm_tablets от {chat_id}")
+    await callback_query.message.edit_text("💊 Принято. Умница.")
+
+@dp.callback_query(lambda c: c.data == 'confirm_water')
+async def confirm_water_callback(callback_query: types.CallbackQuery):
+    chat_id = callback_query.from_user.id
+    reminder_states.pop(chat_id, None)
+    print(f"[LOG] confirm_water от {chat_id}")
+    await callback_query.message.edit_text("💧 Хорош! Вода внутри — сила снаружи.")
+
+async def water_annoy_loop(chat_id):
+    await asyncio.sleep(1800)  # 30 минут
+    while chat_id in reminder_states and reminder_states[chat_id]['type'] == 'water':
+        if chat_id in ping_blocked_until and datetime.datetime.now() < ping_blocked_until[chat_id]:
+            await asyncio.sleep(60)
+            continue
+        try:
+            await bot.send_message(chat_id, random.choice([
+                "🚨 Ты воду вообще пьёшь, нет?",
+                "💦 Алё, организм сушится",
+                "🌊 Напоминаю: H2O — это важно, а не просто химия!"
+            ]), reply_markup=reminder_kb)
+            print(f"[LOG] water_annoy_loop: отправлено напоминание пользователю {chat_id}")
+            await asyncio.sleep(300)
+        except Exception as e:
+            print(f"[LOG] water_annoy_loop error: {e}")
+            continue
+
+async def tablet_annoy_loop(chat_id):
+    await asyncio.sleep(1800)  # 30 минут
+    while chat_id in reminder_states and reminder_states[chat_id]['type'] == 'tablets':
+        if chat_id in ping_blocked_until and datetime.datetime.now() < ping_blocked_until[chat_id]:
+            await asyncio.sleep(60)
+            continue
+        try:
+            keyboard = types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [types.InlineKeyboardButton(text="✅ Приняла", callback_data="confirm_tablets")]
+                ]
+            )
+            await bot.send_message(chat_id, random.choice([
+                "💊 Таблетки сами себя не примут!",
+                "🧠 А добавочки где?",
+                "⏰ Если не приняла — я буду пиликать!"
+            ]), reply_markup=keyboard)
+            print(f"[LOG] tablet_annoy_loop: отправлено напоминание пользователю {chat_id}")
+            await asyncio.sleep(300)
+        except Exception as e:
+            print(f"[LOG] tablet_annoy_loop error: {e}")
+            continue
+
 def save_entry(entry):
     print(f"[DEBUG] save_entry: {entry}")
     with open(STATE_FILE, 'r+') as f:
@@ -423,8 +464,10 @@ async def send_reminder():
     print("[DEBUG] send_reminder called")
     for chat_id in list(user_data.keys()):
         try:
-            await bot.send_message(chat_id, "👋 Напоминание: не забудь оценить состояние и принять добавки. Напиши /start")
-        except Exception:
+            await bot.send_message(chat_id, "👋 Напоминание: не забудь оценить состояние и принять добавки. Напиши /start", reply_markup=reminder_kb)
+            print(f"[LOG] send_reminder отправлено пользователю {chat_id}")
+        except Exception as e:
+            print(f"[LOG] send_reminder error: {e}")
             continue
 
 async def periodic_tip():
@@ -432,7 +475,9 @@ async def periodic_tip():
     for chat_id in list(user_data.keys()):
         try:
             await bot.send_message(chat_id, f"📌 Совет: {random.choice(random_tips)}")
-        except Exception:
+            print(f"[LOG] periodic_tip отправлено пользователю {chat_id}")
+        except Exception as e:
+            print(f"[LOG] periodic_tip error: {e}")
             continue
 
 async def main():
