@@ -230,7 +230,8 @@ def admin_only_callback(handler):
 reminder_states = {}
 ping_blocked_until = {}
 
-@dp.message(Command(commands=['start']))
+# --- Объявление хэндлеров (без декораторов) ---
+
 async def start_handler(message: types.Message):
     print(f"[DEBUG] /start from {message.chat.id}")
     user_data[message.chat.id] = {'step': 0, 'entry': {}}
@@ -260,24 +261,18 @@ async def ask_next_field(message):
     else:
         await message.answer("Хочешь что-то добавить? Напиши сюда. Если нет — просто отправь '-' или 'нет'.")
 
-@dp.message(Command(commands=['_test_remind']))
-@admin_only
 async def test_reminders(message: types.Message):
     print(f"[DEBUG] test_reminders called by {message.chat.id}")
     await send_reminder()
     await periodic_tip()
     await message.answer("🔔 Тестовые напоминания и советы отправлены.")
 
-@dp.message(Command(commands=['_test_water']))
-@admin_only
 async def test_water(message: types.Message):
     print(f"[DEBUG] test_water called by {message.chat.id}")
     await message.answer("💧 Напоминание: не забудь пить воду", reply_markup=reminder_kb)
     reminder_states[message.chat.id] = {'type': 'water', 'time': datetime.datetime.now()}
     asyncio.create_task(water_annoy_loop(message.chat.id))
 
-@dp.message(Command(commands=['_test_tablets']))
-@admin_only
 async def test_tablets(message: types.Message):
     print(f"[DEBUG] test_tablets called by {message.chat.id}")
     keyboard = types.InlineKeyboardMarkup(
@@ -289,8 +284,6 @@ async def test_tablets(message: types.Message):
     reminder_states[message.chat.id] = {'type': 'tablets', 'time': datetime.datetime.now()}
     asyncio.create_task(tablet_annoy_loop(message.chat.id))
 
-@dp.message(Command(commands=['_test_mood']))
-@admin_only
 async def test_mood(message: types.Message):
     print(f"[DEBUG] test_mood called by {message.chat.id}")
     await message.answer("🧠 Пора оценить своё состояние. Напиши /start и просто отметь, как ты")
@@ -299,22 +292,16 @@ async def test_mood(message: types.Message):
     await periodic_tip()
     await message.answer("🔔 Тестовые напоминания и советы отправлены.")
 
-@dp.message(Command(commands=['_test_tip']))
-@admin_only
 async def test_random_tip(message: types.Message):
     print(f"[DEBUG] test_random_tip called by {message.chat.id}")
     await message.answer(f"Тестовый совет: {random.choice(random_tips)}")
 
-@dp.message(Command(commands=['_clear_log']))
-@admin_only
 async def clear_log(message: types.Message):
     print(f"[DEBUG] clear_log called by {message.chat.id}")
     with open(STATE_FILE, 'w') as f:
         json.dump([], f)
     await message.answer("🧹 Лог очищен. Все записи удалены.")
 
-@dp.message(Command(commands=['_test_log']))
-@admin_only
 async def test_log_entry(message: types.Message):
     print(f"[DEBUG] test_log_entry called by {message.chat.id}")
     dummy_entry = {
@@ -329,8 +316,6 @@ async def test_log_entry(message: types.Message):
     save_entry(dummy_entry)
     await message.answer("📁 Тестовая запись сохранена в лог.")
 
-@dp.message(Command(commands=['export_log']))
-@admin_only
 async def export_log(message: types.Message):
     try:
         print(f"[LOG] export_log called by {message.chat.id}")
@@ -341,13 +326,11 @@ async def export_log(message: types.Message):
     except Exception as e:
         await message.answer(f"⚠️ Ошибка при отправке: {e}")
 
-@dp.message(Command(commands=['отъебись']))
 async def disable_pings(message: types.Message):
     ping_blocked_until[message.chat.id] = datetime.datetime.now() + datetime.timedelta(hours=1)
     print(f"[LOG] USER {message.chat.id} отключил напоминания до {ping_blocked_until[message.chat.id]}")
     await message.answer("🫠 Окей, отключаю напоминания на 1 час. Но потом я вернусь!")
 
-@dp.message()
 async def process_input(message: types.Message):
     # --- Исправлено: админ может использовать админ-команды, но не попадает в пользовательский поток ---
     if message.from_user.id == ADMIN_ID:
@@ -395,8 +378,6 @@ async def process_input(message: types.Message):
         await message.answer(f"Совет дня: {random.choice(random_tips)}")
         user_data.pop(user_id, None)
 
-# --- CallbackQuery хэндлеры оставляем без проверки user_only_callback ---
-@dp.callback_query(lambda c: c.data in ['confirm_water', 'confirm_posture', 'later'])
 async def reminder_callback_handler(callback_query: types.CallbackQuery):
     print(f"[LOG] Callback {callback_query.data} от {callback_query.from_user.id}")
     if callback_query.data.startswith('confirm_'):
@@ -404,14 +385,12 @@ async def reminder_callback_handler(callback_query: types.CallbackQuery):
     elif callback_query.data == 'later':
         await callback_query.message.edit_text("Ок, напомню позже.")
 
-@dp.callback_query(lambda c: c.data == 'confirm_tablets')
 async def confirm_tablets_callback(callback_query: types.CallbackQuery):
     chat_id = callback_query.from_user.id
     reminder_states.pop(chat_id, None)
     print(f"[LOG] confirm_tablets от {chat_id}")
     await callback_query.message.edit_text("💊 Принято. Умница.")
 
-@dp.callback_query(lambda c: c.data == 'confirm_water')
 async def confirm_water_callback(callback_query: types.CallbackQuery):
     chat_id = callback_query.from_user.id
     reminder_states.pop(chat_id, None)
@@ -493,6 +472,23 @@ async def periodic_tip():
 
 async def main():
     print("[DEBUG] main() started")
+    # --- Регистрация хэндлеров ---
+    dp.message.register(start_handler, Command(commands=['start']))
+    dp.message.register(test_reminders, Command(commands=['_test_remind']))
+    dp.message.register(test_water, Command(commands=['_test_water']))
+    dp.message.register(test_tablets, Command(commands=['_test_tablets']))
+    dp.message.register(test_mood, Command(commands=['_test_mood']))
+    dp.message.register(test_random_tip, Command(commands=['_test_tip']))
+    dp.message.register(clear_log, Command(commands=['_clear_log']))
+    dp.message.register(test_log_entry, Command(commands=['_test_log']))
+    dp.message.register(export_log, Command(commands=['export_log']))
+    dp.message.register(disable_pings, Command(commands=['отъебись']))
+    dp.message.register(process_input)  # fallback
+
+    dp.callback_query.register(reminder_callback_handler, lambda c: c.data in ['confirm_water', 'confirm_posture', 'later'])
+    dp.callback_query.register(confirm_tablets_callback, lambda c: c.data == 'confirm_tablets')
+    dp.callback_query.register(confirm_water_callback, lambda c: c.data == 'confirm_water')
+
     scheduler.add_job(send_reminder, 'cron', hour=9)
     scheduler.add_job(send_reminder, 'cron', hour=21)
     for h in [0, 3, 6, 9, 12, 15, 18, 21]:
