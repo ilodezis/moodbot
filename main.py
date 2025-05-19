@@ -283,7 +283,7 @@ async def water_annoy_loop(chat_id):
             await bot.send_message(chat_id, random.choice([
                 "🚨 Ты воду вообще пьёшь, нет?",
                 "💦 Алё, организм сушится",
-                "🌊 Напоминаю: H2О — это важно, а не просто химия!"
+                "🌊 Напоминаю: H2O — это важно, а не просто химия!"
             ]), reply_markup=keyboard)
             await asyncio.sleep(300)
         except Exception:
@@ -370,6 +370,8 @@ async def export_log(message: types.Message):
 
 @dp.message()
 async def process_input(message: types.Message):
+    if message.text.lower().strip() in ['/export_log', '/start', '/отъебись']:
+        return  # эти команды обрабатываются отдельно
     print(f"[DEBUG] process_input: {message.text} from {message.chat.id}")
     text = message.text.lower().strip()
     if any(word in text for word in ['ишак', 'одноклеточный', 'твар', 'уанючий', 'ебучий', 'ебанный']):
