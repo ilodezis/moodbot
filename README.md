@@ -19,8 +19,8 @@
 
 1. Склонируй репозиторий:
 ```bash
-git clone https://github.com/yourname/mood-tracker-bot.git
-cd mood-tracker-bot
+git clone https://github.com/ilodezis/moodtracker
+cd moodtracker
 ```
 
 2. Установи зависимости:
