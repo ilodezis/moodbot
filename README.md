@@ -66,8 +66,8 @@ pip install -r requirements.txt
 
 ```env
 API_TOKEN=токен_от_BotFather     # обязательный
-ADMIN_ID=409183653               # твой Telegram-ID
-TARGET_USER_ID=791353019         # кому летят напоминания
+ADMIN_ID=               # твой Telegram-ID
+TARGET_USER_ID=         # кому летят напоминания
 ```
 
 ### 4. Запуск локально
