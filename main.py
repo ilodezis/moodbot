@@ -9,6 +9,10 @@ import datetime
 import json
 import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.jobstores.base import JobLookupError
+from apscheduler.schedulers.base import STATE_RUNNING
+from apscheduler.triggers.cron import CronTrigger
+import pytz
 
 # --- Новые константы ---
 ADMIN_ID = 409183653  # <-- теперь только admin
@@ -140,14 +144,14 @@ random_tips = [
     "Даже без мотивации — ты имеешь значение.",
     "Иногда лучшее, что ты можешь сделать — это не делать.",
     "Не винить себя — это уже шаг к себе.",
-    "Ты — не проблема. Ты — процесс."
+    "Ты — не проблема. Ты — процесс.",
     "🚶 Прогуляйся хотя бы 10 минут. Даже если не хочется — это сработает.",
     "🧘 Сделай 5 глубоких вдохов и выдохов. Это обнулит нервную систему.",
     "🛏️ Если чувствуешь перегруз — просто полежи с закрытыми глазами 10 минут.",
     "🎧 Включи музыку, которая тебя собирает. Даже одна песня может сменить состояние.",
     "📴 Убери телефон хотя бы на полчаса. Мозг отдохнёт от шума.",
     "💤 Не залипай — попробуй лечь спать чуть раньше сегодня.",
-"   📓 Запиши всё, что тебя грузит. Мозг не любит таскать это внутри.",
+    "📓 Запиши всё, что тебя грузит. Мозг не любит таскать это внутри.",
     "🕯️ Устрой себе микроритуал: чай, тишина, одеяло, запах — что угодно, что даёт покой.",
     "💡 Поменяй обстановку хотя бы на 10 минут — другая комната, окно, балкон.",
     "🌞 Если есть солнце — постой на нём пару минут. Это реальный допинг.",
@@ -160,7 +164,7 @@ random_tips = [
     "🧍 Послушай тело: сядь удобно, проверь напряжение в плечах, челюсти, руках.",
     "🔌 Перестань себя пинать. Иногда честный отдых = шаг вперёд.",
     "🧠 Всё, что ты чувствуешь — это информация, а не приговор.",
-    "🎈 Ты не обязана быть продуктивной, чтобы быть ценной."
+    "🎈 Ты не обязана быть продуктивной, чтобы быть ценной.",
     "🧃 Если забыла поесть — сейчас хорошее время. Даже пара ложек — уже не пусто.",
     "💤 Если устала — полежи, даже 10 минут с закрытыми глазами меняют восприятие.",
     "📵 Отключи уведомления хотя бы на 1 час. Тишина — это забота.",
@@ -202,6 +206,18 @@ reminder_kb = types.InlineKeyboardMarkup(
         ]
     ]
 )
+
+# --- Клавиатуры для mood трекинга ---
+def mood_inline_keyboard(step):
+    # step: 0..4, шкала теперь от 1 до 5
+    return types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                types.InlineKeyboardButton(text=str(i), callback_data=f"mood_{step}_{i}")
+                for i in range(1, 6)
+            ]
+        ]
+    )
 
 # --- Обёртка для проверки ADMIN_ID ---
 def admin_only(handler):
@@ -259,9 +275,24 @@ async def ask_next_field(message: types.Message, **kwargs):
     step = user_data[message.chat.id]['step']
     if step < len(mood_fields):
         _, field_name = mood_fields[step]
-        await message.answer(f"{field_name} (1–10):")
+        await message.answer(f"{field_name} (1–5):")
     else:
         await message.answer("Хочешь что-то добавить? Напиши сюда. Если нет — просто отправь '-' или 'нет'.")
+
+async def ask_next_field_mood(chat_id):
+    step = user_data[chat_id]['step']
+    if step < len(mood_fields):
+        _, field_name = mood_fields[step]
+        await bot.send_message(
+            chat_id,
+            f"{field_name} (1–5):",
+            reply_markup=mood_inline_keyboard(step)
+        )
+    else:
+        await bot.send_message(
+            chat_id,
+            "Хочешь что-то добавить? Напиши сюда. Если нет — просто отправь '-' или 'нет'."
+        )
 
 # --- Тестовые команды (отправляют только админу) ---
 async def test_water(message: types.Message, **kwargs):
@@ -289,13 +320,46 @@ async def test_tip(message: types.Message, **kwargs):
     print(f"[DEBUG] test_tip called by {message.chat.id}")
     await message.answer(f"Тестовый совет (только админу): {random.choice(random_tips)}")
 
+async def test_combo_reminder():
+    try:
+        # Вода
+        await bot.send_message(
+            TARGET_USER_ID,
+            "💧 Напоминание: не забудь пить воду",
+            reply_markup=reminder_kb
+        )
+        reminder_states[TARGET_USER_ID] = {'type': 'water', 'time': datetime.datetime.now()}
+        asyncio.create_task(water_annoy_loop(TARGET_USER_ID))
+
+        # Таблетки
+        keyboard = types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [types.InlineKeyboardButton(text="✅ Приняла", callback_data="confirm_tablets")]
+            ]
+        )
+        await bot.send_message(
+            TARGET_USER_ID,
+            "💊 Напоминание: не забудь принять добавки / таблетки",
+            reply_markup=keyboard
+        )
+        reminder_states[TARGET_USER_ID] = {'type': 'tablets', 'time': datetime.datetime.now()}
+        asyncio.create_task(tablet_annoy_loop(TARGET_USER_ID))
+
+        # Опрос настроения (запуск через ask_next_field_mood)
+        user_data[TARGET_USER_ID] = {'step': 0, 'entry': {}}
+        await ask_next_field_mood(TARGET_USER_ID)
+
+        print("[DEBUG] test_combo_reminder: все три напоминания отправлены")
+    except Exception as e:
+        print(f"[ERROR] test_combo_reminder: {e}")
+
 # --- SEND-команды (отправляют ей) ---
 async def send_water(message: types.Message, **kwargs):
     print(f"[DEBUG] send_water called by {message.chat.id}")
-    target_id = TARGET_USER_ID  # Используем константу напрямую
+    target_id = TARGET_USER_ID
     print(f"[DEBUG] TARGET_USER_ID = {target_id} (type: {type(target_id)})")
     try:
-        await bot.send_message(target_id, "💧 Напоминание: не забудь пить воду", reply_markup=reminder_kb)
+        await bot.send_message(target_id, "Сообщение от мужа:\n💧 Напоминание: не забудь пить воду", reply_markup=reminder_kb)
         reminder_states[target_id] = {'type': 'water', 'time': datetime.datetime.now()}
         asyncio.create_task(water_annoy_loop(target_id))
         await message.answer("✅ Отправлено ей.")
@@ -313,7 +377,7 @@ async def send_tablets(message: types.Message, **kwargs):
                 [types.InlineKeyboardButton(text="✅ Приняла", callback_data="confirm_tablets")]
             ]
         )
-        await bot.send_message(target_id, "💊 Напоминание: не забудь принять добавки / таблетки", reply_markup=keyboard)
+        await bot.send_message(target_id, "Сообщение от мужа:\n💊 Напоминание: не забудь принять добавки / таблетки", reply_markup=keyboard)
         reminder_states[target_id] = {'type': 'tablets', 'time': datetime.datetime.now()}
         asyncio.create_task(tablet_annoy_loop(target_id))
         await message.answer("✅ Отправлено ей.")
@@ -326,7 +390,13 @@ async def send_mood(message: types.Message, **kwargs):
     target_id = TARGET_USER_ID
     print(f"[DEBUG] TARGET_USER_ID = {target_id} (type: {type(target_id)})")
     try:
-        await bot.send_message(target_id, "🧠 Пора оценить своё состояние. Напиши /start и просто отметь, как ты")
+        # Новый текст для автоматического напоминания о трекинге настроения
+        await bot.send_message(
+            target_id,
+            "Сообщение от мужа:\n🧠 Как ты сейчас? Оцени по шкале от 1 до 10:\n"
+            "1. Настроение\n2. Тревожность\n3. Энергия\n4. Фокус\n5. Эмоциональная чувствительность\n\n"
+            "Просто напиши числа по очереди, я всё запишу."
+        )
         await message.answer("✅ Отправлено ей.")
     except Exception as e:
         print(f"[ERROR] send_mood: {e}")
@@ -337,25 +407,22 @@ async def send_tip(message: types.Message, **kwargs):
     target_id = TARGET_USER_ID
     print(f"[DEBUG] TARGET_USER_ID = {target_id} (type: {type(target_id)})")
     try:
-        await bot.send_message(target_id, f"📌 Совет: {random.choice(random_tips)}")
+        await bot.send_message(target_id, f"Сообщение от мужа:\n📌 Совет: {random.choice(random_tips)}")
         await message.answer("✅ Отправлено ей.")
     except Exception as e:
         print(f"[ERROR] send_tip: {e}")
         await message.answer(f"❌ Ошибка отправки: {e}")
 
-# --- SEND-команда для произвольного сообщения ---
 async def send_message(message: types.Message, **kwargs):
     print(f"[DEBUG] send_message called by {message.chat.id}")
-    target_id = TARGET_USER_ID  # Используем константу напрямую
+    target_id = TARGET_USER_ID
     print(f"[DEBUG] TARGET_USER_ID = {target_id} (type: {type(target_id)})")
     try:
-        # Проверяем, есть ли текст после команды
         text = message.text.split(maxsplit=1)
         if len(text) < 2:
             await message.answer("❌ Укажите текст сообщения после команды. Пример: `/say Привет!`")
             return
-        # Отправляем сообщение указанному пользователю
-        await bot.send_message(target_id, text[1])
+        await bot.send_message(target_id, f"Сообщение от мужа:\n{text[1]}")
         await message.answer("✅ Сообщение отправлено.")
     except Exception as e:
         print(f"[ERROR] send_message: {e}")
@@ -395,7 +462,7 @@ async def export_log(message: types.Message, **kwargs):
         print(f"[LOG] export_log called by {message.chat.id}")
         await message.answer_document(
             types.FSInputFile("mood_log.json"),
-            caption="📂 Вот лог со всеми состояниями"
+            caption="📂 Вот лог со всеми состояними"
         )
     except Exception as e:
         await message.answer(f"⚠️ Ошибка при отправке: {e}")
@@ -408,17 +475,14 @@ async def disable_pings(message: types.Message, **kwargs):
 
 async def process_input(message: types.Message, **kwargs):
     print(f"[DEBUG] process_input called by {message.from_user.id} with text: {message.text}")
-    # --- Исправлено: админ может использовать админ-команды, но не попадает в пользовательский поток ---
     if message.from_user.id == ADMIN_ID:
-        # Если это команда (начинается с /), ничего не делаем — обработает другой хэндлер
         if message.text and message.text.startswith('/'):
             return
-        # Если это не команда — отвечаем, что бот не для ввода данных админом
         await message.answer("Этот бот не предназначен для ввода данных админом.")
         return
 
     if message.text.lower().strip() in ['/export_log', '/start', '/отъебись']:
-        return  # эти команды обрабатываются отдельно
+        return
     print(f"[DEBUG] process_input: {message.text} from {message.chat.id}")
     text = message.text.lower().strip()
     if any(word in text for word in ['ишак', 'одноклеточный', 'твар', 'уанючий', 'ебучий', 'ебанный']):
@@ -434,14 +498,16 @@ async def process_input(message: types.Message, **kwargs):
     if step < len(mood_fields):
         try:
             val = int(message.text.strip())
-            if not (1 <= val <= 10):
+            if not (1 <= val <= 5):
                 raise ValueError
             field_key, _ = mood_fields[step]
             user_data[user_id]['entry'][field_key] = val
             user_data[user_id]['step'] += 1
+            # --- Уведомление админу о каждом ответе ---
+            await bot.send_message(ADMIN_ID, f"Ответ на опрос ({field_key}): {val}")
             await ask_next_field(message)
         except ValueError:
-            await message.answer("Пожалуйста, введи число от 1 до 10.")
+            await message.answer("Пожалуйста, введи число от 1 до 5.")
     else:
         comment = message.text.strip()
         if comment.lower() in ['-', 'нет']:
@@ -452,10 +518,18 @@ async def process_input(message: types.Message, **kwargs):
         save_entry(entry)
         await message.answer("Спасибо. Всё записал. ✍️")
         await message.answer(f"Совет дня: {random.choice(random_tips)}")
+        # --- Уведомление админу о завершении опроса ---
+        await bot.send_message(ADMIN_ID, f"Опрос завершён. Ответы: {json.dumps(entry, ensure_ascii=False)}")
         user_data.pop(user_id, None)
 
 async def reminder_callback_handler(callback_query: types.CallbackQuery):
     print(f"[LOG] Callback {callback_query.data} от {callback_query.from_user.id}")
+    # --- Уведомление админу о подтверждении или откладывании ---
+    if callback_query.from_user.id == TARGET_USER_ID:
+        if callback_query.data.startswith('confirm_'):
+            await bot.send_message(ADMIN_ID, f"Она нажала: {callback_query.data.replace('confirm_', '').capitalize()}")
+        elif callback_query.data == 'later':
+            await bot.send_message(ADMIN_ID, "Она нажала: Позже")
     if callback_query.data.startswith('confirm_'):
         await callback_query.message.edit_text("Принято! 🥳")
     elif callback_query.data == 'later':
@@ -466,15 +540,29 @@ async def confirm_tablets_callback(callback_query: types.CallbackQuery):
     reminder_states.pop(chat_id, None)
     print(f"[LOG] confirm_tablets от {chat_id}")
     await callback_query.message.edit_text("💊 Принято. Умница.")
+    # --- Уведомление админу о подтверждении ---
+    if chat_id == TARGET_USER_ID:
+        await bot.send_message(ADMIN_ID, "Таблетки: подтверждено!")
 
 async def confirm_water_callback(callback_query: types.CallbackQuery):
     chat_id = callback_query.from_user.id
     reminder_states.pop(chat_id, None)
     print(f"[LOG] confirm_water от {chat_id}")
     await callback_query.message.edit_text("💧 Хорош! Вода внутри — сила снаружи.")
+    # --- Уведомление админу о подтверждении ---
+    if chat_id == TARGET_USER_ID:
+        await bot.send_message(ADMIN_ID, "Вода: подтверждено!")
 
 async def water_annoy_loop(chat_id):
     await asyncio.sleep(1800)  # 30 минут
+    # --- Проверка, нажала ли она кнопку ---
+    if chat_id in reminder_states and reminder_states[chat_id]['type'] == 'water':
+        if chat_id in ping_blocked_until and datetime.datetime.now() < ping_blocked_until[chat_id]:
+            await asyncio.sleep(60)
+        else:
+            # Если не нажала за 30 минут
+            if chat_id == TARGET_USER_ID:
+                await bot.send_message(ADMIN_ID, "ВНИМАНИЕ: Она не нажала 'Выпила' в течение 30 минут после напоминания о воде!")
     while chat_id in reminder_states and reminder_states[chat_id]['type'] == 'water':
         if chat_id in ping_blocked_until and datetime.datetime.now() < ping_blocked_until[chat_id]:
             await asyncio.sleep(60)
@@ -492,7 +580,15 @@ async def water_annoy_loop(chat_id):
             continue
 
 async def tablet_annoy_loop(chat_id):
-    await asyncio.sleep(1800)  # 30 минут
+    await asyncio.sleep(600)  # 10 минут
+    # --- Проверка, нажала ли она кнопку ---
+    if chat_id in reminder_states and reminder_states[chat_id]['type'] == 'tablets':
+        if chat_id in ping_blocked_until and datetime.datetime.now() < ping_blocked_until[chat_id]:
+            await asyncio.sleep(60)
+        else:
+            # Если не нажала за 10 минут
+            if chat_id == TARGET_USER_ID:
+                await bot.send_message(ADMIN_ID, "ВНИМАНИЕ: Она не нажала 'Приняла' в течение 10 минут после напоминания о таблетках!")
     while chat_id in reminder_states and reminder_states[chat_id]['type'] == 'tablets':
         if chat_id in ping_blocked_until and datetime.datetime.now() < ping_blocked_until[chat_id]:
             await asyncio.sleep(60)
@@ -528,58 +624,143 @@ def save_entry(entry):
         f.truncate()
 
 async def send_reminder():
-    print("[DEBUG] send_reminder called")
+    print("[DEBUG] send_reminder called at", datetime.datetime.now())
     for chat_id in list(user_data.keys()):
         try:
-            await bot.send_message(chat_id, "👋 Напоминание: не забудь оценить состояние и принять добавки. Напиши /start", reply_markup=reminder_kb)
+            # Таймерное сообщение без "Сообщение от мужа"
+            await bot.send_message(
+                chat_id,
+                "⏰ Пора оценить своё состояние! Просто ответь на вопросы по шкале от 1 до 10.",
+                reply_markup=reminder_kb
+            )
+            # Автоматически инициируем опрос настроения
+            user_data[chat_id] = {'step': 0, 'entry': {}}
+            await ask_next_field_mood(chat_id)
             print(f"[LOG] send_reminder отправлено пользователю {chat_id}")
+            # Уведомление админу
+            await bot.send_message(ADMIN_ID, f"Напоминание отправлено пользователю {chat_id} (оценка состояния)")
         except Exception as e:
             print(f"[LOG] send_reminder error: {e}")
             continue
 
 async def periodic_tip():
-    print("[DEBUG] periodic_tip called")
+    print("[DEBUG] periodic_tip called at", datetime.datetime.now())
     for chat_id in list(user_data.keys()):
         try:
+            # Проверяем, есть ли пользователь в данных
+            if chat_id not in user_data:
+                print(f"[DEBUG] Skipping periodic_tip for chat_id {chat_id} (not in user_data)")
+                continue
             await bot.send_message(chat_id, f"📌 Совет: {random.choice(random_tips)}")
             print(f"[LOG] periodic_tip отправлено пользователю {chat_id}")
+            # Уведомление админу
+            await bot.send_message(ADMIN_ID, f"Совет отправлен пользователю {chat_id}")
         except Exception as e:
-            print(f"[LOG] periodic_tip error: {e}")
+            print(f"[LOG] periodic_tip error for chat_id {chat_id}: {e}")
             continue
+
+async def admin_help(message: types.Message, **kwargs):
+    # Эта команда работает только для администратора (ADMIN_ID).
+    # Для обычного пользователя она не будет доступна, потому что регистрация:
+    # dp.message.register(admin_only(admin_help), Command("admin_help"))
+    # использует обёртку admin_only, которая не пропустит не-админа.
+    help_text = (
+        "🛠️ Админские команды:\n"
+        "/test_water — тестовое напоминание про воду\n"
+        "/test_tablets — тестовое напоминание про таблетки\n"
+        "/test_mood — тестовое напоминание про трекинг настроения\n"
+        "/test_tip — тестовый случайный совет\n"
+        "/send_water — отправить напоминание про воду ей\n"
+        "/send_tablets — отправить напоминание про таблетки ей\n"
+        "/send_mood — отправить напоминание про трекинг настроения ей\n"
+        "/send_tip — отправить совет ей\n"
+        "/say <текст> — отправить произвольное сообщение ей\n"
+        "/test_remind — подсказка по тестовым командам\n"
+        "/clear_log — очистить лог состояний\n"
+        "/test_log — добавить тестовую запись в лог\n"
+        "/export_log — выгрузить лог\n"
+        "/admin_help — этот список\n"
+    )
+    await message.answer(help_text)
+
+async def mood_callback_handler(callback_query: types.CallbackQuery):
+    # data: mood_{step}_{value}
+    try:
+        data = callback_query.data
+        if not data.startswith("mood_"):
+            return
+        parts = data.split("_")
+        step = int(parts[1])
+        value = int(parts[2])
+        chat_id = callback_query.from_user.id
+
+        if chat_id not in user_data or user_data[chat_id]['step'] != step:
+            await callback_query.answer("Неожиданный шаг. Попробуй ещё раз.", show_alert=True)
+            return
+
+        field_key, _ = mood_fields[step]
+        user_data[chat_id]['entry'][field_key] = value
+        user_data[chat_id]['step'] += 1
+
+        await callback_query.answer(f"Вы выбрали: {value}")
+        await callback_query.message.edit_text(f"{mood_fields[step][1]}: {value}")
+
+        # Уведомление админу о каждом ответе
+        await bot.send_message(ADMIN_ID, f"Ответ на опрос ({field_key}): {value}")
+
+        # Следующий шаг или комментарий
+        if user_data[chat_id]['step'] < len(mood_fields):
+            await ask_next_field_mood(chat_id)
+        else:
+            await bot.send_message(
+                chat_id,
+                "Хочешь что-то добавить? Напиши сюда. Если нет — просто отправь '-' или 'нет'."
+            )
+    except Exception as e:
+        print(f"[ERROR] mood_callback_handler: {e}")
 
 async def main():
     print("[DEBUG] main() started")
     # --- Регистрация хэндлеров ---
     print("[DEBUG] Registering handlers...")
     dp.message.register(start_handler, Command("start"))
-    # Тестовые команды (только админу)
     dp.message.register(admin_only(test_water), Command("test_water"))
     dp.message.register(admin_only(test_tablets), Command("test_tablets"))
     dp.message.register(admin_only(test_mood), Command("test_mood"))
     dp.message.register(admin_only(test_tip), Command("test_tip"))
-    # SEND-команды (только админу, но отправляют ей)
     dp.message.register(admin_only(send_water), Command("send_water"))
     dp.message.register(admin_only(send_tablets), Command("send_tablets"))
     dp.message.register(admin_only(send_mood), Command("send_mood"))
     dp.message.register(admin_only(send_tip), Command("send_tip"))
-    dp.message.register(admin_only(send_message), Command("say"))  # Регистрация команды /say
+    dp.message.register(admin_only(send_message), Command("say"))
     dp.message.register(admin_only(test_reminders), Command("test_remind"))
     dp.message.register(admin_only(clear_log), Command("clear_log"))
     dp.message.register(admin_only(test_log_entry), Command("test_log"))
     dp.message.register(admin_only(export_log), Command("export_log"))
+    dp.message.register(admin_only(admin_help), Command("admin_help"))
     dp.message.register(disable_pings, Command("отъебись"))
     dp.message.register(process_input)  # fallback
 
     dp.callback_query.register(reminder_callback_handler, lambda c: c.data in ['confirm_water', 'confirm_posture', 'later'])
     dp.callback_query.register(confirm_tablets_callback, lambda c: c.data == 'confirm_tablets')
     dp.callback_query.register(confirm_water_callback, lambda c: c.data == 'confirm_water')
+    dp.callback_query.register(mood_callback_handler, lambda c: c.data.startswith("mood_"))
 
     print("[DEBUG] Handlers registered. Starting scheduler...")
-    scheduler.add_job(send_reminder, 'cron', hour=9)
-    scheduler.add_job(send_reminder, 'cron', hour=21)
+
+    # --- Используем pytz для таймзоны Москвы ---
+    moscow_tz = pytz.timezone("Europe/Moscow")
+
+    scheduler.add_job(send_reminder, 'cron', hour=9, timezone=moscow_tz)
+    scheduler.add_job(send_reminder, 'cron', hour=21, timezone=moscow_tz)
     for h in [0, 3, 6, 9, 12, 15, 18, 21]:
-        scheduler.add_job(periodic_tip, 'cron', hour=h)
+        scheduler.add_job(periodic_tip, 'cron', hour=h, timezone=moscow_tz)
+
     scheduler.start()
+    # --- Выводим расписание задач для отладки ---
+    print("[DEBUG] Scheduler started. Jobs:")
+    for job in scheduler.get_jobs():
+        print(f"  {job.id}: next run at {job.next_run_time}")
     print("[DEBUG] Scheduler started. Starting polling...")
     await dp.start_polling(bot)
     print("[DEBUG] Polling started.")
