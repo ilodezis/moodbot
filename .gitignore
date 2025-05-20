@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg
+*.egg-info/
+dist/
+build/
+.env
+.venv
+venv/
+env/
+*.log
+
+# VSCode, PyCharm, etc.
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# MacOS
+.DS_Store
+
+# Logs / Runtime
+mood_log.json
+
+# System junk
+Thumbs.db
+*.swp
+*.bak
+*.tmp
