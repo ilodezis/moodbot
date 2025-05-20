@@ -52,8 +52,8 @@
 ### 1. Клонируем репу
 
 ```bash
-git clone https://github.com/ilodezis/moodtracker.git
-cd moodtracker
+git clone https://github.com/ilodezis/moodboot
+cd moodbot
 ```
 
 ### 2. Ставим зависимости (Python 3.11+)
@@ -65,9 +65,9 @@ pip install -r requirements.txt
 ### 3. Создаём `.env`
 
 ```env
-API_TOKEN=токен_от_BotFather     # обязательный
-ADMIN_ID=               # твой Telegram-ID
-TARGET_USER_ID=         # кому летят напоминания
+API_TOKEN= токен_от_BotFather    # обязательный
+ADMIN_ID=                        # твой Telegram-ID
+TARGET_USER_ID=                  # кому летят напоминания
 ```
 
 ### 4. Запуск локально
