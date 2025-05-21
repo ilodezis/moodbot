@@ -15,6 +15,9 @@ from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.base import STATE_RUNNING
 from apscheduler.triggers.cron import CronTrigger
 import pytz
+import requests
+from bs4 import BeautifulSoup
+import aiohttp
 
 # --- Логирование ---
 logging.basicConfig(
@@ -217,8 +220,7 @@ easter_eggs = [
 reminder_kb = types.InlineKeyboardMarkup(
     inline_keyboard=[
         [
-            types.InlineKeyboardButton(text="✅ Выпила", callback_data="confirm_water"),
-            types.InlineKeyboardButton(text="⏰ Позже", callback_data="later")
+            types.InlineKeyboardButton(text="✅ Выпила", callback_data="confirm_water")
         ]
     ]
 )
@@ -491,9 +493,19 @@ async def export_log(message: types.Message, **kwargs):
 
 async def disable_pings(message: types.Message, **kwargs):
     print(f"[DEBUG] disable_pings called by {message.chat.id}")
-    ping_blocked_until[message.chat.id] = datetime.datetime.now() + datetime.timedelta(hours=1)
-    print(f"[LOG] USER {message.chat.id} отключил напоминания до {ping_blocked_until[message.chat.id]}")
-    await message.answer("🫠 Окей, отключаю напоминания на 1 час. Но потом я вернусь!")
+    chat_id = message.chat.id
+    ping_blocked_until[chat_id] = datetime.datetime.now() + datetime.timedelta(hours=1)
+    print(f"[LOG] USER {chat_id} отключил напоминания до {ping_blocked_until[chat_id]}")
+    
+    # Удаляем все активные напоминания
+    async with reminder_states_lock:
+        if chat_id in reminder_states:
+            reminder_states.pop(chat_id, None)
+    
+    # Удаляем из активных пользователей трекинга
+    active_users.discard(chat_id)
+    
+    await message.answer("🫠 Окей, отключаю все напоминания на 1 час. Но потом я вернусь!")
 
 async def update_reminder_state(chat_id, state):
     async with reminder_states_lock:
@@ -583,19 +595,20 @@ async def process_input(message: types.Message, **kwargs):
 
 async def reminder_callback_handler(callback_query: types.CallbackQuery):
     print(f"[LOG] Callback {callback_query.data} от {callback_query.from_user.id}")
-    # --- Уведомление админу о подтверждении или откладывании ---
+    # --- Уведомление админу о подтверждении ---
     if callback_query.from_user.id == TARGET_USER_ID:
         if callback_query.data.startswith('confirm_'):
             if callback_query.data == 'confirm_water':
                 await bot.send_message(ADMIN_ID, "Вода: подтверждено!")
             else:
                 await bot.send_message(ADMIN_ID, f"Она нажала: {callback_query.data.replace('confirm_', '').capitalize()}")
-        elif callback_query.data == 'later':
-            await bot.send_message(ADMIN_ID, "Она нажала: Позже")
-    if callback_query.data.startswith('confirm_'):
+    # --- Очищаем reminder_states для confirm_water и confirm_tablets ---
+    if callback_query.data == 'confirm_water':
+        reminder_states.pop(callback_query.from_user.id, None)
         await callback_query.message.edit_text("Принято! 🥳")
-    elif callback_query.data == 'later':
-        await callback_query.message.edit_text("Ок, напомню позже.")
+    elif callback_query.data == 'confirm_tablets':
+        reminder_states.pop(callback_query.from_user.id, None)
+        await callback_query.message.edit_text("Принято! 🥳")
 
 async def confirm_tablets_callback(callback_query: types.CallbackQuery):
     chat_id = callback_query.from_user.id
@@ -706,6 +719,18 @@ async def water_annoy_loop(chat_id):
     if chat_id == TARGET_USER_ID:
         await bot.send_message(ADMIN_ID, "ВНИМАНИЕ: Она не нажала 'Выпила' в течение 30 минут после напоминания о воде!")
     
+    water_annoy_texts = [
+        "🚨 Ты воду вообще пьёшь, нет?",
+        "💦 Алё, организм сушится",
+        "🌊 Напоминаю: H2O — это важно, а не просто химия!",
+        "🥤 Пить воду — это не опция, а необходимость!",
+        "🫗 Даже один глоток — уже вклад в здоровье.",
+        "💧 Вода нужна не только цветам, но и тебе!",
+        "👀 Я всё вижу. Где твой стакан воды?",
+        "🫙 Пора наполнить кружку и сделать глоток!",
+        "🧊 Может, добавить лёд? Главное — выпей воды!",
+        "🚰 Не забывай: вода — твой внутренний супергерой."
+    ]
     while True:
         async with reminder_states_lock:
             if chat_id not in reminder_states or reminder_states[chat_id].get('type') != 'water':
@@ -716,15 +741,11 @@ async def water_annoy_loop(chat_id):
             continue
             
         try:
-            message = random.choice([
-                "🚨 Ты воду вообще пьёшь, нет?",
-                "💦 Алё, организм сушится",
-                "🌊 Напоминаю: H2O — это важно, а не просто химия!"
-            ])
+            message = random.choice(water_annoy_texts)
             await bot.send_message(chat_id, message, reply_markup=reminder_kb)
             if chat_id == TARGET_USER_ID:
                 await bot.send_message(ADMIN_ID, f"(отправлено повторное напоминание о воде)")
-            await asyncio.sleep(300)  # 5 minutes
+            await asyncio.sleep(600)  # 10 minutes
         except Exception as e:
             logger.error(f"Error in water_annoy_loop: {e}")
             break
@@ -743,6 +764,18 @@ async def tablet_annoy_loop(chat_id):
     if chat_id == TARGET_USER_ID:
         await bot.send_message(ADMIN_ID, "ВНИМАНИЕ: Она не нажала 'Приняла' в течение 10 минут после напоминания о таблетках!")
     
+    tablets_annoy_texts = [
+        "💊 Напоминаю: таблетки сами себя не примут!",
+        "⏰ Время принять добавки. Не забывай!",
+        "🧠 Организм ждёт добавки. Пора принять!",
+        "📦 Таблетки ждут тебя. Не откладывай!",
+        "🫙 Пора заботиться о себе — добавки ждут!",
+        "🕑 Не тяни, просто прими таблетку!",
+        "🧴 Это не сложно — просто сделай это сейчас.",
+        "🦸‍♀️ Таблетки — твоя суперсила сегодня.",
+        "🫶 Забота о себе начинается с маленьких шагов.",
+        "💡 Не забудь: регулярность — залог эффекта!"
+    ]
     while True:
         async with reminder_states_lock:
             if chat_id not in reminder_states or reminder_states[chat_id].get('type') != 'tablets':
@@ -753,12 +786,7 @@ async def tablet_annoy_loop(chat_id):
             continue
             
         try:
-            message = random.choice([
-                "💊 Напоминаю: таблетки сами себя не примут!",
-                "⏰ Время принять добавки. Не забывай!",
-                "🧠 Организм ждёт добавки. Пора принять!",
-                "📦 Таблетки ждут тебя. Не откладывай!"
-            ])
+            message = random.choice(tablets_annoy_texts)
             keyboard = types.InlineKeyboardMarkup(
                 inline_keyboard=[
                     [types.InlineKeyboardButton(text="✅ Приняла", callback_data="confirm_tablets")]
@@ -767,10 +795,59 @@ async def tablet_annoy_loop(chat_id):
             await bot.send_message(chat_id, message, reply_markup=keyboard)
             if chat_id == TARGET_USER_ID:
                 await bot.send_message(ADMIN_ID, f"(отправлено повторное напоминание о таблетках)")
-            await asyncio.sleep(300)  # 5 minutes
+            await asyncio.sleep(420)  # 7 minutes
         except Exception as e:
             logger.error(f"Error in tablet_annoy_loop: {e}")
             break
+
+# Remove duplicate weather functions and add the correct ones
+async def get_lyubertsy_weather_text():
+    """Получить погоду в Люберцах через wttr.in"""
+    url = "https://wttr.in/Lyubertsy?format=%l:+%c+%t&lang=ru"
+    headers = {"User-Agent": "curl/7.64.1", "Accept-Language": "ru"}
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            try:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        logger.error(f"wttr.in returned status: {resp.status}")
+                        return "⚠️ Сервис погоды временно недоступен"
+                    weather_text = await resp.text()
+            except asyncio.TimeoutError:
+                logger.error("wttr.in request timed out")
+                return "⚠️ Сервис погоды не отвечает (таймаут)"
+            except aiohttp.ClientError as e:
+                logger.error(f"AIOHTTP error: {e}")
+                return "⚠️ Ошибка при подключении к сервису погоды"
+        result = (
+            f"🌤️ {weather_text.strip()}\n"
+            "Данные предоставлены wttr.in"
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Ошибка получения погоды: {e}")
+        return "⚠️ Не удалось получить погоду в Люберцах"
+
+async def send_weather_to_user(message: types.Message, **kwargs):
+    """Отправить погоду пользователю"""
+    msg = await message.answer("⏳ Получаю погоду...")
+    try:
+        weather = await asyncio.wait_for(get_lyubertsy_weather_text(), timeout=7)
+        await bot.send_message(TARGET_USER_ID, f"Сообщение от мужа:\n{weather}")
+        await msg.edit_text("✅ Погода отправлена")
+    except asyncio.TimeoutError:
+        await msg.edit_text("❌ Не удалось получить погоду за 7 секунд (таймаут)")
+    except Exception as e:
+        logger.error(f"Ошибка отправки погоды: {e}")
+        await msg.edit_text("❌ Не удалось отправить погоду (ошибка)")
+
+async def scheduled_weather():
+    """Scheduled weather update for automatic sending"""
+    try:
+        weather = await get_lyubertsy_weather_text()
+        await bot.send_message(TARGET_USER_ID, f"🌞 Утренняя погода:\n{weather}")
+    except Exception as e:
+        logger.error(f"Ошибка отправки запланированной погоды: {e}")
 
 # --- Обработчики команд и сообщений ---
 async def admin_help(message: types.Message, **kwargs):
@@ -784,6 +861,7 @@ async def admin_help(message: types.Message, **kwargs):
         "/send_tablets — отправить напоминание про таблетки ей\n"
         "/send_mood — отправить напоминание про трекинг настроения ей\n"
         "/send_tip — отправить совет ей\n"
+        "/send_weather — отправить погоду ей\n"  # Добавлено
         "/say <текст> — отправить произвольное сообщение ей\n"
         "/clear_log — очистить лог состояний\n"
         "/test_log — добавить тестовую запись в лог\n"
@@ -791,17 +869,6 @@ async def admin_help(message: types.Message, **kwargs):
         "/admin_help — этот список команд"
     )
     await message.answer(help_text)
-
-async def shutdown(dp):
-    logger.info("Shutting down...")
-    try:
-        flush_buffer()  # Save any remaining entries
-        await dp.storage.close()
-        await dp.storage.wait_closed()
-        if scheduler.state == STATE_RUNNING:
-            scheduler.shutdown()
-    except Exception as e:
-        logger.error(f"Error during shutdown: {e}")
 
 async def main():
     try:
@@ -816,6 +883,7 @@ async def main():
         dp.message.register(admin_only(test_mood), Command("test_mood"))
         dp.message.register(admin_only(test_tip), Command("test_tip"))
         dp.message.register(admin_only(send_water), Command("send_water"))
+        dp.message.register(admin_only(send_weather_to_user), Command("send_weather"))  # Добавлено
         dp.message.register(admin_only(send_tablets), Command("send_tablets"))
         dp.message.register(admin_only(send_mood), Command("send_mood"))
         dp.message.register(admin_only(send_tip), Command("send_tip"))
@@ -825,10 +893,10 @@ async def main():
         dp.message.register(admin_only(test_log_entry), Command("test_log"))
         dp.message.register(admin_only(export_log), Command("export_log"))
         dp.message.register(admin_only(admin_help), Command("admin_help"))
-        dp.message.register(disable_pings, Command("отъебись"))
+        dp.message.register(disable_pings, Command(commands=["отъебись", "off", "disable"]))  # Добавлены альтернативные команды
         dp.message.register(process_input)  # fallback
 
-        dp.callback_query.register(reminder_callback_handler, lambda c: c.data in ['confirm_water', 'confirm_posture', 'later'])
+        dp.callback_query.register(reminder_callback_handler, lambda c: c.data in ['confirm_water', 'confirm_posture'])
         dp.callback_query.register(confirm_tablets_callback, lambda c: c.data == 'confirm_tablets')
         dp.callback_query.register(confirm_water_callback, lambda c: c.data == 'confirm_water')
         dp.callback_query.register(mood_callback_handler, lambda c: c.data.startswith("mood_"))
@@ -841,13 +909,19 @@ async def main():
         print("[DEBUG] Scheduling jobs...")
         
         # Регулярные напоминания
-        scheduler.add_job(send_water_reminder, 'cron', hour='*/2', args=[TARGET_USER_ID], timezone=moscow_tz)
+        # Вода: каждые 2 часа с 7:00 до 23:00
+        scheduler.add_job(send_water_reminder, 'cron', hour='7-23/2', args=[TARGET_USER_ID], timezone=moscow_tz)
+        # Таблетки: только дневные (пример: 9:30, 14:00, 23:00)
         scheduler.add_job(send_tablets_reminder, 'cron', hour=9, minute=30, args=[TARGET_USER_ID], timezone=moscow_tz)
         scheduler.add_job(send_tablets_reminder, 'cron', hour=14, minute=0, args=[TARGET_USER_ID], timezone=moscow_tz)
         scheduler.add_job(send_tablets_reminder, 'cron', hour=23, minute=0, args=[TARGET_USER_ID], timezone=moscow_tz)
+        # Трекинг настроения: только после 7:00 и до полуночи (пример: 9:35 и 21:05)
         scheduler.add_job(send_mood_reminder, 'cron', hour=9, minute=35, args=[TARGET_USER_ID], timezone=moscow_tz)
-        scheduler.add_job(send_mood_reminder, 'cron', hour=23, minute=5, args=[TARGET_USER_ID], timezone=moscow_tz)
-        scheduler.add_job(periodic_tip, 'cron', hour='*/4', timezone=moscow_tz)
+        scheduler.add_job(send_mood_reminder, 'cron', hour=21, minute=5, args=[TARGET_USER_ID], timezone=moscow_tz)
+        # Советы: каждые 4 часа с 7:00 до 23:00
+        scheduler.add_job(periodic_tip, 'cron', hour='7-23/4', timezone=moscow_tz)
+        # Погода в Люберцах каждый день в 7:30
+        scheduler.add_job(scheduled_weather, 'cron', hour=7, minute=30, timezone=moscow_tz)
 
         # Start scheduler
         scheduler.start()
