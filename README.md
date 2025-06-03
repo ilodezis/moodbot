@@ -70,7 +70,7 @@
 ### 1. Клонируем проект
 
 ```bash
-git clone https://github.com/ilodezis/moodboot
+git clone https://github.com/ilodezis/moodbot
 cd moodbot
 ```
 
