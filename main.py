@@ -536,6 +536,22 @@ def save_entry(entry):
     if len(buffer) >= BUFFER_SIZE:
         flush_buffer()
 
+async def shutdown(dispatcher: Dispatcher):
+    """Gracefully stop scheduler, storage and HTTP session."""
+    logger.info("Shutting down scheduler and bot")
+    try:
+        scheduler.shutdown(wait=False)
+    except Exception as e:
+        logger.error(f"Scheduler shutdown error: {e}")
+    try:
+        await dispatcher.storage.close()
+    except Exception as e:
+        logger.error(f"Storage close error: {e}")
+    try:
+        await bot.session.close()
+    except Exception as e:
+        logger.error(f"HTTP session close error: {e}")
+
 async def process_input(message: types.Message, **kwargs):
     try:
         logger.debug(f"process_input called by {message.from_user.id} with text: {message.text}")
